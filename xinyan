@@ -1,0 +1,175 @@
+import pandas as pd
+import numpy as np
+import importlib
+
+from matplotlib import pyplot as plt
+from xgboost import plot_importance
+
+import xgboost
+
+spec = importlib.util.spec_from_file_location("MyFuncs","../xingchen_model_v2_20180115/MyFuncs.py")
+f = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(f)
+
+pd.set_option('display.max_columns', 500)
+pd.set_option('display.max_rows', 500)
+pd.set_option('precision',4)
+
+%matplotlib inline
+
+0.数据读取
+df = pd.read_excel("./xinyan_validate.xlsx")
+df.columns
+Index(['borrow_nid', 'user_id', 'borrow_type', 'add_time', 'success_time',
+       'channel_category', 'add_channel', 'verifier_type', 'DAY', 'is_new',
+       'repay_period', 'D10', 'M10', 'D10_account', 'M10_account',
+       'borrow_nid_1', 'acc_exc', 'acc_sleep', 'apply_credibility',
+       'apply_score', 'consfin_org_count', 'currently_overdue',
+       'currently_performance', 'history_fail_fee', 'history_suc_fee',
+       'latest_one_month', 'latest_one_month_fail', 'latest_one_month_suc',
+       'latest_overdue_time', 'latest_query_time', 'latest_six_month',
+       'latest_three_month', 'loans_cash_count', 'loans_count',
+       'loans_credibility', 'loans_latest_time', 'loans_long_time',
+       'loans_org_count', 'loans_overdue_count', 'loans_score',
+       'loans_settle_count', 'max_overdue_amt', 'max_overdue_days',
+       'query_cash_count', 'query_finance_count', 'query_org_count',
+       'query_sum_count', 'xy_140001', 'xy_140002', 'xy_140003', 'xy_140004',
+       'xy_140005', 'xy_140006', 'xy_140007', 'xy_140008', 'xy_140009',
+       'xy_140010', 'xy_140011', 'xy_140012', 'xy_140013', 'xy_140014',
+       'xy_140015', 'xy_140016', 'xy_140017', 'xy_140018', 'xy_140019',
+       'xy_140020', 'xy_140021', 'xy_140022', 'xy_140023', 'xy_140024',
+       'xy_140025', 'xy_140026', 'xy_140027', 'xy_140028', 'xy_140029',
+       'xy_140030', 'xy_140031'],
+      dtype='object')
+features  = ['acc_exc', 'acc_sleep', 'apply_credibility',
+       'apply_score', 'consfin_org_count', 'currently_overdue',
+       'currently_performance', 'history_fail_fee', 'history_suc_fee',
+       'latest_one_month', 'latest_one_month_fail', 'latest_one_month_suc',
+       'latest_overdue_time', 'latest_query_time', 'latest_six_month',
+       'latest_three_month', 'loans_cash_count', 'loans_count',
+       'loans_credibility', 'loans_latest_time', 'loans_long_time',
+       'loans_org_count', 'loans_overdue_count', 'loans_score',
+       'loans_settle_count', 'max_overdue_amt', 'max_overdue_days',
+       'query_cash_count', 'query_finance_count', 'query_org_count',
+       'query_sum_count', 'xy_140001', 'xy_140002', 'xy_140003', 'xy_140004',
+       'xy_140005', 'xy_140006', 'xy_140007', 'xy_140008', 'xy_140009',
+       'xy_140010', 'xy_140011', 'xy_140012', 'xy_140013', 'xy_140014',
+       'xy_140015', 'xy_140016', 'xy_140017', 'xy_140018', 'xy_140019',
+       'xy_140020', 'xy_140021', 'xy_140022', 'xy_140023', 'xy_140024',
+       'xy_140025', 'xy_140026', 'xy_140027', 'xy_140028', 'xy_140029',
+       'xy_140030', 'xy_140031']
+1. 数据清洗
+# 时间类型变量，和贷款时间做差，形成新变量
+s1 = df["loans_latest_time"].apply(pd.Timestamp)
+s2 = df.success_time.apply(pd.Timestamp)
+df["success_to_lastest_loan"] = (s1 - s2).dt.days
+s1 = df.latest_query_time.apply(pd.Timestamp)
+s2 = df.success_time.apply(pd.Timestamp)
+df["success_to_qry"] = (s1 - s2).dt.days
+#drop原有的变量
+features.remove("loans_latest_time") 
+features.remove("latest_query_time")
+#添加新的变量
+features = features + ["success_to_lastest_loan","success_to_qry"]
+2 数据质量
+2.1 数值型变量
+stats_tab = df[features].describe().T
+display(stats_tab)
+
+
+
+_todrop = stats_tab[stats_tab["min"] == stats_tab["max"]]
+_todrop_vars =_todrop.index.values
+display(_todrop)
+
+
+2.2 非数值型变量
+stats_tab = df[features].select_dtypes(include=np.object).describe().T
+_todrop_vars = np.append(_todrop_vars, stats_tab[stats_tab["count"]==0].index)
+display(stats_tab)
+
+
+3 逾期情况
+已经定义了M10为逾期，dpd10+，所有用户皆为分期
+df["M10"].value_counts().plot.pie(legend=True)
+
+
+df["M10"].value_counts()/df["M10"].size
+
+df["M10"].mean()
+
+
+4 特征预测能力分析
+4.1 变量分箱
+# 数值变量按10分位数切分
+num_features = df[features].select_dtypes(include=[np.number])
+binAutoDict = f.getAutoQuanDict(inDs=df, varList=num_features, binQ= np.arange(0,1.1,0.1))
+# 非数值 
+non_num_bin_dict = { col:None for col in df[features].select_dtypes(exclude=[np.number]).columns }
+binAutoDict.update(non_num_bin_dict)
+ woeTabs = f.collectWoeTabs(inDs= df, binDict=binAutoDict,targVar="M10")
+
+
+
+
+4.2变量预测能力探索
+
+# 存在单区间高于整体两倍的变量，分段想起
+iv_map = {}
+for k,v in woeTabs.items():
+    try:
+        v['od_rate'] = v[1]/(v["Good&Bad"])
+        iv_map.update({k: v["Iv_sum"].iloc[0]})
+        if v["od_rate"].max()>df["M10"].mean()*2:
+            display(v.style.bar(align='mid',subset=["Woe"]))
+            print("\n")
+    except IndexError as e:
+        print(e)
+
+4.2.1 IV汇总
+
+pd.Series(iv_map).sort_values(ascending=False)
+pd.Series(iv_map).sort_values(ascending=True).plot(kind="barh",figsize=(20,20))
+
+iv_map = {}
+for k,v in woeTabs.items():
+    try:
+        v['od_rate'] = v[1]/(v["Good&Bad"])
+        iv_map.update({k: v["Iv_sum"].iloc[0]})
+        display(v.style.bar(align='mid',subset=["Woe"]))
+        print("\n")
+    except IndexError as e:
+        print(e)
+
+
+
+# str_obj_columns
+cat_columns = ["latest_overdue_time", "max_overdue_amt", "max_overdue_days", "xy_140027", "xy_140028"]
+_features_droped = [col for col in features if col not in cat_columns]
+transed_df = pd.get_dummies(df[cat_columns])
+transed_df.columns = transed_df.columns.str.replace("\\[|\\]", "_")
+full_df = pd.concat([df, transed_df], axis=1)
+feat_w_dummies =  _features_droped + list(transed_df.columns)
+full_df.columns = full_df.columns.str.replace("\\[|\\]", "_")
+trainDs_X = full_df.sample(frac=.7, random_state= 12345)[feat_w_dummies]
+trainDs_Y = full_df["M10"][trainDs_X.index]
+testDs_X = full_df[~df.index.isin(trainDs_X.index)][feat_w_dummies]
+testDs_Y = full_df["M10"][~df.index.isin(trainDs_X.index)]
+param = {'max_depth': 2, 'eta': 0.2, 'verbosity': 1, 'objective': 'binary:logistic', 'lambda':1 , }
+param['nthread'] = 4
+param['eval_metric'] = 'auc'
+train = xgb.DMatrix(trainDs_X, label = trainDs_Y)
+test = xgb.DMatrix(testDs_X, label = testDs_Y)
+evallist = [(test, 'eval'), (train, 'train')]
+num_round = 300
+bst = xgb.train(param, train, num_round, evallist)
+
+def my_plot_importance(booster, figsize, **kwargs): 
+    from matplotlib import pyplot as plt
+    from xgboost import plot_importance
+    fig, ax = plt.subplots(1,1,figsize=figsize)
+    return plot_importance(booster=booster, ax=ax, **kwargs)
+my_plot_importance(booster=bst,figsize=(10,10), height=0.8)
+
+fig , ax = plt.subplots(1,1, figsize=(20,20))
+xgb.plot_tree(bst, num_trees=3, ax=ax)
