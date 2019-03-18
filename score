@@ -1,1 +1,227 @@
 
+分词 useful_word_split.py
+
+
+import pandas as pd
+import jieba
+from collections import Counter
+from scipy.stats import chi2_contingency
+import time
+
+def check_contain_chinese(check_str):
+    for ch in check_str:
+        if u'\u4e00' <= ch <= u'\u9fff' and len(check_str)>=2:
+            return True
+    return False
+
+def most_word_split(sms_word,n):
+    word_split=[i for i in jieba.cut(sms_word,cut_all=True) if check_contain_chinese(i)==True]
+    most_word=Counter(word_split).most_common(n)
+    return most_word
+
+def save_most_word(most_word,path):
+    with open(path,'w+') as f:
+        for x in most_word:
+            f.write('{1},{0}\n'.format(x[1],x[0]))
+
+def load_most_word(path):
+    most_word=[]  
+    with open(path,'r') as f:
+        for x in f.readlines():
+            x = x.split(',')
+            most_word.append(x[0])
+    return most_word
+
+def word_regexp(i,x):
+    if i in x:
+        return 1
+    else:
+        return 0
+
+def Chi_Square_check(df,p_limit):
+    userful_word=[]
+    for i in df.iloc[:,2:].columns:
+        t1=pd.crosstab(df['target'],df[i])
+        g, p, dof, expctd=chi2_contingency(t1)
+        if p<=p_limit:
+            userful_word.append(i)
+    return userful_word
+
+def save_useful_word(useful_word,path):
+    with open(path,'w+') as f:
+        for x in useful_word:
+            f.write('{0}\n'.format(x))
+
+
+if __name__ == '__main__':
+    '''
+    totally cost 2794.0436701774597
+    '''
+    time_start=time.time()
+    print('Now:load split sample')
+    sms_word=open(r'P:\policy\jizeyuan\逾期短信分类_v2\word_split_sample.csv',encoding='utf-8').read()
+    print(len(sms_word))
+    print('Now:split word')
+    most_word=most_word_split(sms_word,30000)
+    print('Now:save most_word')
+    save_most_word(most_word,r'P:\policy\jizeyuan\逾期短信分类_v2\most_word.txt')
+    print('Now:load most_word')
+    most_word=load_most_word(r'P:\policy\jizeyuan\逾期短信分类_v2\most_word.txt')
+    print(len(most_word))
+    print('Now:load train_data')
+    df=pd.read_excel(r'P:\policy\jizeyuan\逾期短信分类_v2\SMS_TrainData.xlsx',encoding='utf-8',sheet='sheet1')
+    print('Now:make dummy variable')
+    for i in most_word:
+        df[i]=df['content'].apply(lambda x:word_regexp(i,x))
+    print('Now:Chi_Square check')
+    useful_word=Chi_Square_check(df,0.001)
+    print(len(useful_word))
+    print('Now:save userful_word')
+    save_useful_word(useful_word,r'P:\policy\jizeyuan\逾期短信分类_v2\useful_word.txt')
+    print('done!')
+    time_end=time.time()
+    print('totally cost',time_end-time_start)
+
+    
+    
+    
+模型训练model_train
+
+
+import pandas as pd
+from sklearn.cross_validation import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.grid_search import GridSearchCV
+import sklearn.metrics as metrics
+from sklearn.externals import joblib
+from sklearn_pandas import DataFrameMapper
+from sklearn2pmml import PMMLPipeline
+from sklearn2pmml import sklearn2pmml
+import time
+
+def word_regexp(i,x):
+    if i in x:
+        return 1
+    else:
+        return 0
+    
+def load_useful_word(path):
+    useful_word=[]
+    with open(path,'r') as f:
+        for x in f.readlines():
+            x = x.split()
+            useful_word.append(x[0])
+    return useful_word
+
+def best_RandomForestClassifier(train_data,train_target):
+    params={
+            'n_estimators':[x for x in range(51,101,10)],
+            'criterion': ['gini','entropy'],
+            'max_depth':[x for x in range(10,15,1)]
+            }
+    clf=RandomForestClassifier(min_samples_leaf=20)
+    grid=GridSearchCV(clf,params,cv=3,scoring='f1_macro')
+    grid.fit(train_data,train_target)
+    print('best_score:',grid.grid_scores_)
+    print('best_score:',grid.best_score_)
+    print('best_params:',grid.best_params_)
+    best_model=grid.best_estimator_
+    return best_model
+
+def model_report(best_parameter_model):
+    test_est_tr = best_parameter_model.predict(test_data)
+    train_est_tr = best_parameter_model.predict(train_data)
+    test_est_p_tr = best_parameter_model.predict_proba(test_data)[:,1]
+    train_est_p_tr = best_parameter_model.predict_proba(train_data)[:,1]
+    print(metrics.classification_report(test_target, test_est_tr))
+    print(metrics.classification_report(train_target, train_est_tr))
+    
+
+if __name__ == '__main__':
+    '''
+    totally cost 139.51591968536377
+    '''
+    time_start=time.time()
+    print('Now:load train_data')
+    df=pd.read_excel(r'P:\policy\jizeyuan\逾期短信分类_v2\SMS_TrainData.xlsx',encoding='utf-8',sheet='sheet1')
+    print('Now:load useful_word')
+    useful_word=load_useful_word(r'P:\policy\jizeyuan\逾期短信分类_v2\useful_word.txt')
+    print('Now:make model variable')
+    for i in useful_word:
+        df[i]=df['content'].apply(lambda x:word_regexp(i,x))
+    print('Now:split train|test data')
+    model_variable=df.iloc[:,2:] 
+    model_target=df['target']
+    train_data,test_data,train_target,test_target=train_test_split(model_variable,model_target,test_size=0.2,train_size=0.8,random_state=12)
+    print('serch best parameter for RandomForestClassifier')
+    #best_RandomForestClassifier(train_data,train_target)
+    best_RandomForestClassifier=RandomForestClassifier(n_estimators=101,criterion='entropy',max_depth=15,min_samples_split=20)
+    best_RandomForestClassifier_fit=best_RandomForestClassifier.fit(train_data, train_target)
+    model_report(best_RandomForestClassifier_fit)
+    print('save model_pkl')
+    joblib.dump(best_RandomForestClassifier, r'P:\policy\jizeyuan\逾期短信分类_v2\model_RDF_v2.pkl',compress=3)
+    print('save model_pmml')
+    pipeline_model=PMMLPipeline([('RDF_classifier', best_RandomForestClassifier)]).fit(train_data, train_target)
+    sklearn2pmml(pipeline_model,r'P:\policy\jizeyuan\逾期短信分类_v2\model_RDF_v2.pmml', with_repr = True)
+    print('done!')
+    time_end=time.time()
+    print('totally cost',time_end-time_start)
+
+
+
+
+模型预测 model_predict
+import pandas as pd
+import numpy as np
+from sklearn.externals import joblib
+from sklearn.ensemble import RandomForestClassifier
+import time
+
+def word_regexp(i,x):
+    if i in x:
+        return 1
+    else:
+        return 0
+    
+def load_useful_word(path):
+    useful_word=[]
+    with open(path,'r') as f:
+        for x in f.readlines():
+            x = x.split()
+            useful_word.append(x[0])
+    return useful_word
+
+def export_columns(df):
+    columns_list=list(df.columns)+['predict_result']
+    return columns_list
+
+
+if __name__ == '__main__':
+    '''
+    totally cost 3876.487582206726
+    '''
+    time_start=time.time()
+    print('Now:load predict data')
+    df=pd.read_excel(r'P:\policy\jizeyuan\逾期短信分类_v2\sms_predict_sample.xlsx',encoding='utf-8')
+    df=df.fillna('无')
+    export_columns_list=export_columns(df)
+    print('Now:load useful_word&model')
+    useful_word=load_useful_word(r'P:\policy\jizeyuan\逾期短信分类_v2\useful_word.txt')
+    model=joblib.load(r'P:\policy\jizeyuan\逾期短信分类_v2\model_RDF_v2.pkl')
+    print('Now:make predict variable')
+    for i in useful_word:
+        df[i]=df['content'].apply(lambda x:word_regexp(i,x)) 
+    model_data=df.iloc[:,-len(useful_word):]
+    print('Now:predicting')
+    df['predict_result']=model.predict(model_data)
+    print('Now:make export columns')
+    df_export=df[export_columns_list]
+    print('exporting')
+    df_export.to_excel(r'P:\policy\jizeyuan\逾期短信分类_v2\sms_predict_result.xlsx')
+    print('done!')
+    time_end=time.time()
+    print('totally cost',time_end-time_start)
+
+
+    
+  
