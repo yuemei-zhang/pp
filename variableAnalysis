@@ -1,1 +1,287 @@
 
+
+
+select * from policy.tmp_zym_channel_log_1
+
+
+create table policy.tmp_zym_channel_log_1 (
+user_id	int,
+borrow_nid int,
+add_time string,
+is_new int,
+reg_channel_category string ,
+log_time string,
+log_add_channel string
+)
+
+insert into  policy.tmp_zym_channel_log_1(
+user_id	,
+borrow_nid,
+add_time,
+is_new,
+reg_channel_category ,
+log_time,
+log_add_channel
+) values (	11168822	,	201809212301017543965159	,	'43364.9810763889'	,	1	,	'流量超市API'	,	'2018-09-24 23:09:43'	,	'app-androidquhua'	),
+(	11467021	,	201809160901027061519731	,	'43359.3972106481'	,	1	,	'流量超市API'	,	'2018-09-16 19:09:18'	,	'app-androidquhua'	),
+
+
+
+
+set @begin_date='2019-02-01';
+set @end_date='2019-02-14';
+
+
+/*每日进件订单*/
+DROP TABLE IF EXISTS policy.tmp_zym_1;
+CREATE TABLE IF NOT EXISTS policy.tmp_zym_1
+SELECT DISTINCT DATE(add_time)AS add_date,a.add_product,a.borrow_type,a.status,
+CASE WHEN a.add_product='sxk'THEN '7'ELSE a.borrow_type END AS TYPE,
+a.is_new,
+CASE WHEN is_new=0 THEN '0'ELSE '1'END AS isnew,
+CASE WHEN b.test_label LIKE'%新流%'THEN '1'ELSE '0'END AS flow,
+a.channel_category,
+a.borrow_nid
+
+FROM `jujube`.`dw_riskdata_zc_borrow_info` a 
+JOIN rca.`yyd_task_info`b 
+ON a.borrow_nid=b.borrow_nid
+WHERE ADD_PRODUCT IN('shoujidai','sxk')
+AND a.add_time>=@begin_date
+AND a.add_time<@end_date
+AND a.repay_period<2;
+
+ALTER TABLE policy.tmp_zym_1 ADD INDEX (borrow_nid);
+
+select count(distinct borrow_nid) from policy.tmp_zym_reject_reason;
+/*拼接拒绝原因*/
+DROP TABLE IF EXISTS policy.tmp_zym_reject_reason;
+CREATE TABLE IF NOT EXISTS policy.tmp_zym_reject_reason
+SELECT distinct a.*,b.scorer_id
+from policy.tmp_zym_1  a
+left join rca.`yyd_scorers_result`  b
+on a.borrow_nid=b.borrow_nid AND b.flow_type='决策流' AND b.score=0;
+
+/*拒绝原因属于哪一个模块*/
+ALTER TABLE policy.tmp_zym_reject_reason  add model VARCHAR(400);
+UPDATE policy.tmp_zym_reject_reason a JOIN policy.tmp_xiaoyan_rule b ON a.scorer_id=b.scorer_id 
+SET a.model=b.type;
+UPDATE policy.tmp_zym_reject_reason
+SET model='pass'
+WHERE model IS NULL;
+
+select * from policy.tmp_zym_reject_reason
+
+select  add_date,add_product,borrow_type,isnew,model,
+count(distinct borrow_nid) as total_model
+from policy.tmp_zym_reject_reason 
+GROUP BY 1,2,3,4,5
+
+select  a.*,b.total_1
+from (
+select  add_date,add_product,borrow_type,isnew,model,
+count(distinct borrow_nid) as total_model
+from policy.tmp_zym_reject_reason 
+GROUP BY 1,2,3,4,5)  a
+left join (select add_date,add_product,borrow_type,isnew,count(distinct borrow_nid) as total_1 from policy.tmp_zym_reject_reason 
+GROUP BY 1,2,3,4) b
+on a.add_date=b.add_date and a.add_product=b.add_product and a.borrow_type=b.borrow_type and a.isnew=b.isnew
+
+SET @begin_date='2019-02-01';
+SET @end_date='2019-02-21';
+
+/*每日进件订单*/
+DROP TABLE IF EXISTS policy.tmp_zym_1;
+CREATE TABLE IF NOT EXISTS policy.tmp_zym_1
+SELECT DATE(add_time)AS add_date,a.is_new,
+CASE WHEN a.add_product='sxk'THEN '7'ELSE a.borrow_type END AS borrow_type,
+CASE WHEN b.test_label LIKE'%新流%'THEN '1'ELSE '0'END AS flow,a.borrow_nid
+FROM `jujube`.`dw_riskdata_zc_borrow_info` a JOIN rca.`yyd_task_info`b ON a.borrow_nid=b.borrow_nid
+WHERE ADD_PRODUCT IN('shoujidai','sxk')
+AND a.add_time>=@begin_date
+AND a.add_time<@end_date
+AND a.repay_period<2;
+ALTER TABLE policy.tmp_zym_1 ADD INDEX (borrow_nid);
+
+/*进件量*/
+DROP TABLE IF EXISTS policy.tmp_zym_2;
+CREATE TABLE IF NOT EXISTS policy.tmp_zym_2
+SELECT a.add_date,a.borrow_type,a.is_new,flow,SUM(1)AS total_numl
+FROM policy.tmp_zym_1 a
+GROUP BY a.add_date,a.borrow_type,a.is_new,flow;
+
+
+/*仅中*/
+DROP TABLE policy.tmp_zym_reject_only;
+CREATE TABLE policy.tmp_zym_reject_only
+SELECT e.scorer_id,b.add_date,b.borrow_type,b.is_new,b.flow,COUNT(DISTINCT e.borrow_nid)AS reject_num,d.total_numl
+FROM
+(SELECT DISTINCT a.add_date,a.borrow_type,a.is_new,a.flow,c.borrow_nid,COUNT(c.scorer_id)AS tis_no
+FROM policy.tmp_zym_1 a,rca.`yyd_scorers_result` c
+WHERE a.borrow_nid=c.borrow_nid
+AND c.score=0
+GROUP BY a.add_date,c.borrow_nid
+HAVING tis_no=1)b /*仅中的借款单*/
+
+JOIN rca.`yyd_scorers_result` e ON b.borrow_nid=e.borrow_nid /*仅中的借款单的仅中规则*/
+JOIN policy.tmp_zym_2 d ON b.add_date=d.add_date AND b.borrow_type=d.borrow_type AND b.is_new=d.is_new AND b.flow=d.flow
+WHERE e.score=0
+GROUP BY e.scorer_id,b.add_date,b.borrow_type,b.is_new,b.flow
+ORDER BY e.scorer_id,b.add_date;
+
+
+SELECT * FROM policy.tmp_zym_reject_only where borrow_type=7;
+
+
+/*找出需要观察的期间的成功借款单*/
+
+DROP TABLE policy.tmp_zym_borrow_test;
+CREATE TABLE policy.tmp_zym_borrow_test AS 
+SELECT  DISTINCT person_id,user_id,borrow_nid,add_time,borrow_type,DAY,add_product,is_new,is_qx,verifier_type,channel_category,repay_period,late_days,repay_time,
+case when late_days>3 then 1 else 0 end as late3
+FROM jujube.`dw_riskdata_zc_borrow_info`
+WHERE borrow_type=6  
+AND add_product='sxk'  
+AND is_new=0
+and verifier_type=1
+AND STATUS IN (3,5) 
+AND add_time>'2019-01-01' 
+AND add_time<'2019-02-14'  
+AND  DATEDIFF(CURRENT_TIME(),repay_time)>3;
+
+ALTER TABLE policy.tmp_zym_borrow_test ADD INDEX(borrow_nid);
+ALTER TABLE policy.tmp_zym_borrow_test ADD INDEX(user_id);
+select min(add_time),max(add_time) from tmp_zym_borrow_test
+
+/*借款单的引擎字段解析*/
+DROP TABLE policy.tmp_zym_borrow_test_col;
+CREATE TABLE policy.tmp_zym_borrow_test_col AS 
+select distinct a.*,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'bscore',-1),',',1),':',-1),SIGNED)AS bscore,
+CONVERT(REPLACE(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'td_score_v2',-1),':',-1),'}',''),SIGNED)  AS td_score_v2,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'td_instalment_score',-1),',',1),':',-1),SIGNED)  AS td_instalment_score,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'fqd_bscore_short',-1),',',1),':',-1),SIGNED) AS fqd_bscore_short,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'dq_bscore_v2',-1),',',1),':',-1),SIGNED)  AS dq_bscore_v2,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'als_d7_id_nbank_orgnum',-1),'"',3),'"',-1),SIGNED)  AS als_d7_id_nbank_orgnum,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBStRING_INDEX(param_detail,'als_d15_id_nbank_orgnum',-1),'"',3),'"',-1),SIGNED)  AS als_d15_id_nbank_orgnum,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'als_m3_id_nbank_orgnum',-1),'"',3),'"',-1),SIGNED)  AS als_m3_id_nbank_orgnum,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'als_m6_id_nbank_orgnum',-1),'"',3),'"',-1),SIGNED)  AS als_m6_id_nbank_orgnum,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'als_m12_cell_nbank_orgnum',-1),'"',3),'"',-1),SIGNED)  AS als_m12_cell_nbank_orgnum,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'als_m12_id_nbank_orgnum',-1),'"',3),'"',-1),SIGNED)  AS als_m12_id_nbank_orgnum,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'td_id_m2_bank_plams',-1),'"',3),'"',-1),SIGNED)  AS td_id_m2_bank_plams,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'td_id_m6_bank_plams',-1),'"',3),'"',-1),SIGNED)  AS td_id_m6_bank_plams,
+CONVERT(REPLACE(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'last_m3_id_nbank_orgnum',-1),',',1),':',-1),'"',''),SIGNED)  AS last_m3_id_nbank_orgnum,
+CONVERT(REPLACE(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'last_m6_id_nbank_orgnum',-1),',',1),':',-1),'"',''),SIGNED)  AS last_m6_id_nbank_orgnum,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'sjd_last_success_borrow_type',-1),',',1),':',-1),SIGNED)  AS sjd_last_success_borrow_type,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'sjd_max_last_late_days_1',-1),',',1),':',-1),SIGNED)  AS sjd_max_last_late_days_1,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'sjd_max_late_days_3m_new',-1),',',1),':',-1),SIGNED)  AS sjd_max_late_days_3m_new,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'sjd_continue_loan_1',-1),',',1),':',-1),SIGNED) AS sjd_continue_loan_1,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'last_status_detail',-1),',',1),':',-1),SIGNED)  AS last_status_detail,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'last_repay_datediff',-1),',',1),':',-1),SIGNED) AS last_repay_datediff,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'from_lastsuccess_fail_cnt',-1),',',1),':',-1),SIGNED) AS from_lastsuccess_fail_cnt,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'recent_fq_amount_change',-1),',',1),':',-1),SIGNED) AS recent_fq_amount_change
+
+from policy.tmp_zym_borrow_test a
+JOIN rca.`t_workflow_param_value_detail`b 
+ON a.user_id=b.user_id AND a.borrow_nid=b.borrow_nid 
+WHERE b.model_id='sjd_old_admit_1' 
+AND b.update_time>='2019-01-01'
+AND b.value_detail NOT LIKE'%失败%';
+
+/*在sas中跑各个字段的IV的分箱,找出IV值较高的字段,找出响应的规则*/
+
+/*找最近的借款单做预估*/
+DROP TABLE policy.tmp_zym_borrow_test_analy;
+CREATE TABLE policy.tmp_zym_borrow_test_analy AS 
+SELECT  add_time,borrow_nid,status,channel_category,add_product,borrow_type
+FROM jujube.`dw_riskdata_zc_borrow_info` 
+WHERE borrow_type=6  
+AND add_product='sxk'  
+AND is_new=0
+and verifier_type=1
+/*AND STATUS IN (3,5) */
+AND add_time>'2019-02-14' 
+AND add_time<'2019-02-19' 
+AND repay_period<2; 
+
+ ALTER TABLE policy.tmp_zym_borrow_test_analy ADD INDEX(borrow_nid);
+
+ 
+/*找出命中需调整策略规则号的订单*/
+DROP TABLE policy.tmp_zym_borrow_reject_only;
+CREATE TABLE policy.tmp_zym_borrow_reject_only
+select distinct a.borrow_nid
+from policy.tmp_zym_borrow_test_analy a
+JOIN rca.`yyd_scorers_result` b 
+ON a.borrow_nid=b.borrow_nid
+WHERE  b.scorer_id IN(1253,1207,1292,1260)
+AND b.score=0;
+
+ALTER TABLE policy.tmp_zym_borrow_reject_only ADD INDEX(borrow_nid);
+
+/*仅中调整规则号做个标签if_reject_only*/
+DROP TABLE policy.tmp_zym_borrow_reject_only_1;
+CREATE TABLE policy.tmp_zym_borrow_reject_only_1
+SELECT  a.borrow_nid,b.borrow_nid borrownid,
+case when b.borrow_nid is null then 1 else 0 end as if_reject_only
+FROM policy.tmp_zym_borrow_reject_only a 
+LEFT JOIN rca.`yyd_scorers_result`b ON a.borrow_nid=b.borrow_nid 
+AND b.scorer_id NOT IN (1253,1207,1292,1260) 
+AND b.flow_type='决策流' 
+AND b.score=0;
+
+select * from policy.tmp_zym_borrow_reject_only_1
+select * from rca.`yyd_scorers_result` where borrow_nid in ('201902140001010073808257','201902140001010073846939')
+
+ALTER TABLE policy.tmp_zym_borrow_reject_only_1 ADD INDEX(borrow_nid);
+ALTER TABLE policy.tmp_zym_borrow_test_analy ADD if_reject_only int(20);
+
+UPDATE policy.tmp_zym_borrow_test_analy a 
+LEFT JOIN policy.tmp_zym_borrow_reject_only_1 b 
+ON a.borrow_nid=b.borrow_nid
+SET a.if_reject_only=b.if_reject_only
+;
+
+/*从引擎中找出字段*/
+DROP TABLE policy.tmp_zym_borrow_test_analy_col;
+CREATE TABLE policy.tmp_zym_borrow_test_analy_col AS 
+select distinct a.*,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'last_repay_datediff',-1),',',1),':',-1),SIGNED) AS last_repay_datediff,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'bscore',-1),',',1),':',-1),SIGNED)AS bscore,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'fqd_bscore_short',-1),',',1),':',-1),SIGNED) AS fqd_bscore_short,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'als_m3_id_nbank_orgnum',-1),'"',3),'"',-1),SIGNED)  AS als_m3_id_nbank_orgnum,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'sjd_max_last_late_days_1',-1),',',1),':',-1),SIGNED)  AS sjd_max_last_late_days_1,
+CONVERT(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(param_detail,'sjd_max_late_days_3m_new',-1),',',1),':',-1),SIGNED)  AS sjd_max_late_days_3m_new
+from policy.tmp_zym_borrow_test_analy  a
+left JOIN rca.`t_workflow_param_value_detail`b 
+ON a.borrow_nid=b.borrow_nid and b.model_id='sjd_old_admit_1'  and b.value_detail NOT LIKE'%失败%'
+;
+
+DELETE FROM policy.tmp_zym_borrow_test_analy_col WHERE sjd_max_last_late_days_1 IS NULL;
+
+/*预估--可以用分箱的结果取阈值*/
+SELECT 
+if_reject_only,
+CASE 
+WHEN last_repay_datediff>2  THEN 1 
+
+WHEN als_m3_id_nbank_orgnum>=20 THEN 1
+WHEN sjd_max_late_days_3m_new>3 and als_m3_id_nbank_orgnum BETWEEN 0 AND 19 THEN 1
+WHEN als_m3_id_nbank_orgnum<0 AND sjd_max_late_days_3m_new<0 THEN 1
+
+WHEN sjd_max_last_late_days_1>0 THEN 1
+
+
+WHEN bscore>0 AND bscore<530 THEN 1
+WHEN fqd_bscore_short>0 AND fqd_bscore_short<500 THEN 1
+WHEN bscore<0 AND fqd_bscore_short<550 THEN 1
+
+ELSE 0 
+END AS label,
+SUM(IF(STATUS=2,0,1))AS pass_num,
+SUM(1)AS num
+FROM policy.tmp_zym_borrow_test_analy_col 
+GROUP BY 1,2
+;
+
+
